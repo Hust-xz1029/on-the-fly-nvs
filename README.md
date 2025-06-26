@@ -62,8 +62,8 @@ Create the environment:
 ```bash
 git clone --recursive https://github.com/graphdeco-inria/on-the-fly-nvs.git
 cd on-the-fly-nvs
-conda create -n onthefly_nvs python=3.12 -y
-conda activate onthefly_nvs
+conda create -n otf python=3.12 -y
+conda activate otf
 ```
 Default setup with CUDA 12.8 (check your compute platform with `nvcc --version`):
 ```pwsh
@@ -73,7 +73,7 @@ $env:DISTUTILS_USE_SDK=1 # (If you use PowerShell)
 ```
 ```bash
 # Get the versions corresponding to your compute platform at https://pytorch.org/
-pip install torch torchvision xformers --index-url https://download.pytorch.org/whl/cu128
+pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 xformers==0.0.29 --index-url https://download.pytorch.org/whl/cu121
 pip install cupy-cuda12x
 pip install -r requirements.txt
 ```

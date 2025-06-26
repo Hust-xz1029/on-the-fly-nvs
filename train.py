@@ -88,6 +88,7 @@ if __name__ == "__main__":
 
     n_active_keyframes = 0
     n_keyframes = 0
+    submap_id_counter = 0
     needs_reboot = False
     bootstrap_keyframe_dicts = []
     bootstrap_desc_kpts = []
@@ -282,6 +283,42 @@ if __name__ == "__main__":
             n_keyframes += 1
             if not info["is_test"]:
                 prev_desc_kpts = desc_kpts
+            
+            if args.submap_keyframe_threshold > 0 and n_keyframes >= args.submap_keyframe_threshold:
+                
+                # --- 使用场景锁来同步所有线程 ---
+                with scene_model.lock:
+                    print(f"\n[SUBMAP] Reached keyframe threshold ({n_keyframes}). Acquiring lock...")
+                    
+                    # 确保异步优化线程也已停止 (这是个好习惯)
+                    scene_model.join_optimization_thread()
+
+                    print(f"[SUBMAP] Finalizing and saving submap {submap_id_counter}...")
+                    scene_model.save_submap(submap_id_counter, args.model_path)
+
+                    submap_id_counter += 1
+                    print(f"[SUBMAP] Starting new submap {submap_id_counter}.")
+                    
+                    scene_model.reset_for_new_submap()
+                    
+                    # (可选) 更新Webviewer的子地图ID
+                    if args.viewer_mode == 'web':
+                        viewer.submap_id = submap_id_counter
+                
+                print("[SUBMAP] Lock released. Resetting tracking state for new bootstrap...")
+                # --- 锁已释放，现在可以安全地重置循环状态 ---
+                n_keyframes = 1
+                bootstrap_keyframe_dicts = [{"image": image, "info": info}]
+                bootstrap_desc_kpts = [desc_kpts]
+                
+                continue
+            
+            if frameID == len(dataset) - 1 and args.submap_keyframe_threshold > 0:
+                print("\n[INFO] All frames processed and all submaps saved.")
+                print("[INFO] Skipping final monolithic save. Reconstruction complete.")
+                # 在这里我们可以选择优雅地退出程序
+                
+                break
 
             ## Intermediate evaluation
             if (
@@ -321,7 +358,42 @@ if __name__ == "__main__":
     reconstruction_time = time.time() - reconstruction_start_time
 
     # Set to inference mode so that the model can be rendered properly
-    scene_model.enable_inference_mode()
+    # scene_model.enable_inference_mode()
+    if args.submap_keyframe_threshold > 0:
+        # 检查最后的 "尾巴" 地图是否包含任何关键帧
+        if n_keyframes > 0:
+            print(f"\n[FINAL SAVE] Saving final incomplete submap {submap_id_counter} (with {n_keyframes} keyframes)...")
+            # 同样使用安全锁来保存
+            with scene_model.lock:
+                scene_model.save_submap(submap_id_counter, args.model_path)
+            print("[FINAL SAVE] Final submap saved.")
+        
+        print("\n[COMPLETE] All frames processed and all submaps have been saved.")
+        print(f"[COMPLETE] Reconstruction finished. Find your submaps in: {args.model_path}/submaps/")
+
+    # 如果没有启用子地图功能，则执行原有的单一地图保存逻辑
+    else:
+        # Set to inference mode so that the model can be rendered properly
+        scene_model.enable_inference_mode()
+
+        # Save the model and metrics
+        print("Saving the reconstruction to:", args.model_path)
+        metrics = scene_model.save(args.model_path, reconstruction_time, len(dataset))
+        print(
+            ", ".join(
+                f"{metric}: {value:.3f}"
+                if isinstance(value, float)
+                else f"{metric}: {value}"
+                for metric, value in metrics.items()
+            )
+        )
+
+    # (注意: 原有的 fine-tuning 逻辑我们暂时先不考虑，因为它也是为单体地图设计的)
+
+if args.viewer_mode != "none":
+    print("Viewer is still running. Press Ctrl+C to exit.")
+    while True:
+        time.sleep(1)
 
     # Save the model and metrics
     print("Saving the reconstruction to:", args.model_path)

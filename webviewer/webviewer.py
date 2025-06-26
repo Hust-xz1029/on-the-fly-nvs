@@ -10,6 +10,7 @@
 #
 
 import cv2
+import os
 import json
 import time
 import torch
@@ -28,6 +29,7 @@ class WebViewer:
         self.scene_model = scene_model
         self.state = "stop"
         self.trainer_state = "disconnected"
+        self.submap_id = 0
     
     def run(self):
         with serve(self.main, self.ip, self.port, max_size=None, compression=None) as server:
@@ -45,12 +47,26 @@ class WebViewer:
             print("Only one client supported at a time.")
             while self.num_clients >= 1:
                 time.sleep(1)
-
+    
         print("Client connected.")
+
         self.num_clients += 1
         self.state = "stop"
         while True:
             try:
+                 # --- 新增代码：扫描并获取已保存的子地图列表 ---
+                submap_list = []
+                submap_base_dir = os.path.join(self.scene_model.args.model_path, "submaps")
+                if os.path.exists(submap_base_dir):
+                    submap_dirs = sorted(os.listdir(submap_base_dir))
+                    for dirname in submap_dirs:
+                        if dirname.startswith("submap_"):
+                            try:
+                                submap_id = int(dirname.split('_')[1])
+                                submap_list.append(submap_id)
+                            except (IndexError, ValueError):
+                                continue
+                # --- 扫描结束 ---
                 try:
                     cam_centers = self.scene_model.approx_cam_centres
                     cam_centers[:, 1] *= -1  # Flip Y
@@ -73,11 +89,25 @@ class WebViewer:
                     "trainer_state": self.trainer_state,
                     "max_pos": max_pos,
                     "min_pos": min_pos,
-                    "mean_pose": mean_pose
+                    "mean_pose": mean_pose,
+                    "submap_id": self.submap_id,
+                    "available_submaps": submap_list
                 }))
                 
                 # Receive state from client
                 data = json.loads(websocket.recv())
+
+                # --- 新增代码：处理前端发来的加载请求 ---
+                if data.get("action") == "load_submap":
+                    load_id = data.get("submap_id")
+                    print(f"[WebViewer] Received request to load submap {load_id}")
+                    with self.scene_model.lock:
+                        if self.scene_model.load_submap(load_id):
+                            self.submap_id = load_id
+                    # 加载完后跳过本轮，等待前端下一次请求来渲染新场景
+                    continue
+                # --- 加载逻辑结束 ---
+
                 self.state = data["state"]
                 res_x = data["res_x"] // 2
                 res_y = data["res_y"] // 2
@@ -98,11 +128,24 @@ class WebViewer:
                     pose = torch.linalg.inv(pose) # RM,W2C
                 pose = pose.transpose(0, 1) # CM,W2C
 
-                # Render image and send it to client
-                render_pkg = self.scene_model.render(res_x, res_y, pose, 1, fov_x=fov_x, fov_y=fov_y)
-                image = render_pkg["render"]
-                image = image.clamp(0, 1.0).mul(255).permute(1, 2, 0).byte().detach().cpu().numpy()
 
+                view_mode = data.get("view_mode", "rgb") # 从前端获取视图模式，默认为rgb
+                render_pkg = self.scene_model.render(res_x, res_y, pose, 1, fov_x=fov_x, fov_y=fov_y)
+                if view_mode == "depth":
+                    # --- 处理深度图 ---
+                    # 从渲染结果中获取逆深度图，并进行处理以便可视化
+                    invdepth = render_pkg["invdepth"][0]
+                    # 将逆深度图拉伸到0-255范围，并转换为8位整数
+                    depth_image = (invdepth / invdepth.max() * 255).clamp(0, 255).byte().cpu().numpy()
+                    # 使用OpenCV的伪彩映射，将灰度深度图变成彩色，便于观察
+                    colored_depth = cv2.applyColorMap(depth_image, cv2.COLORMAP_INFERNO)
+                    # 最终图像需转回RGB格式
+                    image = cv2.cvtColor(colored_depth, cv2.COLOR_BGR2RGB)
+                else:
+                    # --- 处理彩色图 (原逻辑) ---
+                    image_tensor = render_pkg["render"]
+                    image = image_tensor.clamp(0, 1.0).mul(255).permute(1, 2, 0).byte().detach().cpu().numpy()
+                # --- 图像编码和发送 (这部分不变) ---
                 _, buffer = cv2.imencode(".jpg", cv2.cvtColor(image, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 50])
                 websocket.send(buffer.tobytes())
             except ConnectionClosed:

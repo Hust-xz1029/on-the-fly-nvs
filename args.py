@@ -110,6 +110,8 @@ def get_args():
                         help="Size of the overlapping regions when blending between anchors")
 
     ## Keyframe management
+    parser.add_argument('--submap_keyframe_threshold', type=int, default=30,
+                        help="Maximum number of keyframes per submap before creating a new one.")
     parser.add_argument('--max_active_keyframes', type=int, default=200,
                         help="Maximum number of keyframes to keep in GPU memory. Will start offloading keyframes to CPU if this number is exceeded.")
 

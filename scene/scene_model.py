@@ -70,6 +70,7 @@ class SceneModel:
             matcher: Matcher for the scene model. Defaults to None (if inference_mode is True).
             inference_mode: Whether we load the scene for visualization. Defaults to False.
         """
+        self.args = args
         self.width = width
         self.height = height
         self.matcher = matcher
@@ -1081,3 +1082,98 @@ class SceneModel:
             # Update the anchor and store it on cpu
             anchor.gaussian_params = self.gaussian_params
             self.anchor_weights[anchor_id] = 0
+        
+    def save_submap(self, submap_id, model_path):
+        """
+        将当前场景状态保存为一个带编号的子地图。
+        此最终版本模仿项目中已有的 save() 方法，使用安全的 keyframe.to_colmap() 进行数据导出。
+        """
+        print(f"[SAVE SUBMAP] Saving submap {submap_id}...")
+        # 1. 创建子地图的主文件夹
+        submap_dir = os.path.join(model_path, "submaps", f"submap_{submap_id:04d}")
+        os.makedirs(submap_dir, exist_ok=True)
+        
+        # 2. 保存锚点
+        pcd_path = os.path.join(submap_dir, "point_clouds")
+        os.makedirs(pcd_path, exist_ok=True)
+        for index, anchor in enumerate(self.anchors):
+            anchor.to("cpu") 
+            anchor.save_ply(os.path.join(pcd_path, f"anchor_{index}.ply"))
+
+        # 3. 使用安全的、作者设计的 to_colmap() 方法保存关键帧位姿和信息
+        print(f"[SAVE SUBMAP] Saving keyframe data for submap {submap_id} in COLMAP format...")
+        images = {}
+        cameras = {}
+        colmap_save_path = os.path.join(submap_dir, "colmap")
+        os.makedirs(colmap_save_path, exist_ok=True)
+
+        for kf in self.keyframes:
+            try:
+                # 调用 Keyframe 对象自带的、安全的导出方法
+                camera, image = kf.to_colmap(kf.index)
+                cameras[kf.index] = camera
+                images[kf.index] = image
+            except Exception as e:
+                print(f"[ERROR] Failed to export keyframe {kf.index} to COLMAP format: {e}. Skipping.")
+                continue
+        
+        # 使用项目自带的工具函数写入文件
+        write_model(cameras, images, {}, colmap_save_path, ext=".bin")
+            
+        print(f"[SAVE SUBMAP] Submap {submap_id} saved successfully to {submap_dir}")
+
+    def reset_for_new_submap(self):
+        """
+        通过调用构造函数，将场景彻底重置为初始状态。
+        """
+        self.__init__(self.width, self.height, self.args, self.matcher, self.inference_mode)
+        
+        print("[RESET] Scene has been reset. Ready for new submap.")
+    
+    def load_submap(self, submap_id):
+        """
+        从硬盘加载一个指定的子地图到当前场景中。
+        """
+        print(f"\n[LOAD SUBMAP] Request received for submap {submap_id}.")
+        
+        # 使用“工厂重置”方法来清空当前场景
+        self.reset_for_new_submap()
+
+        submap_dir = os.path.join(self.args.model_path, "submaps", f"submap_{submap_id:04d}")
+        if not os.path.exists(submap_dir):
+            print(f"[ERROR] Submap directory not found: {submap_dir}")
+            return False
+
+        pcd_path = os.path.join(submap_dir, "point_clouds")
+        if not os.path.exists(pcd_path):
+            print(f"[ERROR] Point cloud directory not found for submap {submap_id}")
+            self.anchors = [] # 保证场景为空
+            return True # 允许加载一个空的子地图
+            
+        anchor_files = sorted([f for f in os.listdir(pcd_path) if f.endswith('.ply')])
+        
+        self.anchors = [] # 清空由 reset_for_new_submap 创建的默认空锚点
+        
+        for anchor_file in anchor_files:
+            try:
+                # 注意：我们这里假设 Anchor.from_ply 只需要路径
+                # 如果它还需要sh_degree，代码应为：
+                # anchor = Anchor.from_ply(os.path.join(pcd_path, anchor_file), self.args.sh_degree)
+                anchor = Anchor.from_ply(os.path.join(pcd_path, anchor_file))
+                self.anchors.append(anchor)
+            except Exception as e:
+                print(f"[ERROR] Failed to load anchor {anchor_file}: {e}")
+        
+        # 将第一个加载的锚点设为活动锚点以进行渲染
+        if self.anchors:
+            self.active_anchor = self.anchors[0]
+            self.active_anchor.to("cuda")
+            self.gaussian_params = self.active_anchor.gaussian_params
+        else:
+            # 如果没有锚点被加载，确保场景是空的
+             self.active_anchor = Anchor(self.gaussian_params)
+             self.anchors = [self.active_anchor]
+
+
+        print(f"[LOAD SUBMAP] Submap {submap_id} loaded successfully with {len(self.anchors)} anchors.")
+        return True
