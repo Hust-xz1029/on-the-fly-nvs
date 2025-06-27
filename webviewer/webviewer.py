@@ -10,7 +10,6 @@
 #
 
 import cv2
-import os
 import json
 import time
 import torch
@@ -29,7 +28,6 @@ class WebViewer:
         self.scene_model = scene_model
         self.state = "stop"
         self.trainer_state = "disconnected"
-        self.submap_id = 0
     
     def run(self):
         with serve(self.main, self.ip, self.port, max_size=None, compression=None) as server:
@@ -47,26 +45,12 @@ class WebViewer:
             print("Only one client supported at a time.")
             while self.num_clients >= 1:
                 time.sleep(1)
-    
-        print("Client connected.")
 
+        print("Client connected.")
         self.num_clients += 1
         self.state = "stop"
         while True:
             try:
-                 # --- 新增代码：扫描并获取已保存的子地图列表 ---
-                submap_list = []
-                submap_base_dir = os.path.join(self.scene_model.args.model_path, "submaps")
-                if os.path.exists(submap_base_dir):
-                    submap_dirs = sorted(os.listdir(submap_base_dir))
-                    for dirname in submap_dirs:
-                        if dirname.startswith("submap_"):
-                            try:
-                                submap_id = int(dirname.split('_')[1])
-                                submap_list.append(submap_id)
-                            except (IndexError, ValueError):
-                                continue
-                # --- 扫描结束 ---
                 try:
                     cam_centers = self.scene_model.approx_cam_centres
                     cam_centers[:, 1] *= -1  # Flip Y
@@ -89,25 +73,11 @@ class WebViewer:
                     "trainer_state": self.trainer_state,
                     "max_pos": max_pos,
                     "min_pos": min_pos,
-                    "mean_pose": mean_pose,
-                    "submap_id": self.submap_id,
-                    "available_submaps": submap_list
+                    "mean_pose": mean_pose
                 }))
                 
                 # Receive state from client
                 data = json.loads(websocket.recv())
-
-                # --- 新增代码：处理前端发来的加载请求 ---
-                if data.get("action") == "load_submap":
-                    load_id = data.get("submap_id")
-                    print(f"[WebViewer] Received request to load submap {load_id}")
-                    with self.scene_model.lock:
-                        if self.scene_model.load_submap(load_id):
-                            self.submap_id = load_id
-                    # 加载完后跳过本轮，等待前端下一次请求来渲染新场景
-                    continue
-                # --- 加载逻辑结束 ---
-
                 self.state = data["state"]
                 res_x = data["res_x"] // 2
                 res_y = data["res_y"] // 2

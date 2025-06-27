@@ -33,6 +33,7 @@
         #controls {
             position: absolute;
             bottom: 10px;
+            /* left: 10px; */
             z-index: 10;
             width: 100vw;
             display: flex;
@@ -43,22 +44,19 @@
             position: absolute;
             top: 10px;
             right: 10px;
-            font-size: 24px; /* 调小一点字体以容纳更多信息 */
+            font-size: 40px;
             z-index: 10;
-            background-color: rgba(0,0,255,0.7);
+            background-color: blue;
             color: white;
-            padding: 5px 10px;
             border-radius: 6px;
-        }
-        
-        #status p {
-            margin: 5px 0;
+            opacity: 70%;
         }
 
         button {
             background-color: #2e8b57;
             color: white;
             cursor: pointer;
+
             font-size: 40px;
             border-radius: 6px;
             margin: 5px;
@@ -81,6 +79,7 @@
             border: none;
         }
         
+        /* --- 为新增按钮添加样式 --- */
         #view-controls {
             position: absolute;
             top: 80px;
@@ -89,26 +88,20 @@
             display: flex;
             flex-direction: column;
         }
+        /* ---------------------- */
 
-        /* --- 新增UI的样式 --- */
-        #submap-selector-container {
-            position: absolute;
-            top: 300px; /* 放在其他按钮下面 */
-            left: 10px;
-            z-index: 10;
-            background-color: rgba(46, 139, 87, 0.7);
+        .checkbox {
+            background-color: #888;
             color: white;
-            padding: 8px;
-            border-radius: 6px;
-            font-size: 20px;
-            display: flex;
-            flex-direction: column;
+            border-radius: inherit;
+            font-size: inherit;
+
+            border-radius: inherit;
+            font-size: inherit;
+            margin: inherit;
+            padding: inherit;
+            border: inherit;
         }
-        #submapSelector {
-            font-size: 20px;
-            margin-top: 5px;
-        }
-        /* ------------------- */
 
         button.red {
             background-color: red;
@@ -133,23 +126,17 @@
         <button id="depthButton">Depth</button>
         <button id="topViewButton">Top View</button> 
     </div>
-
-    <div id="submap-selector-container">
-        <label for="submapSelector">Select Submap:</label>
-        <select name="submaps" id="submapSelector">
-            </select>
-    </div>
-
     <div id="status">
         <p id="statusText">Status: <span id="statusValue">Disconnected</span></p>
-        <p>Submap: <span id="submapIdValue">0</span></p> 
     </div>
     <canvas id="canvas" style="width: 100vw; height: 100vh"></canvas>
 
     <script type="module">
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { FirstPersonControls } from 'three/addons/controls/FirstPersonControls.js';
 
+        // Scene translation bounds
         const minBounds = new THREE.Vector3(-1, -1, -1);
         const maxBounds = new THREE.Vector3(1, 1, 1);
         const cameraToWorld = new THREE.Matrix4();
@@ -157,9 +144,7 @@
         let ws;
         let state = 'stop';
         let viewMode = 'rgb';
-        let isActivelyLoading = false; // 加载状态标志
         const reconnectInterval = 1000;
-
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
         const finishBtn = document.getElementById('finishBtn');
@@ -170,17 +155,16 @@
         const rgbButton = document.getElementById('rgbButton');
         const depthButton = document.getElementById('depthButton');
         const topViewButton = document.getElementById('topViewButton');
-        const submapSelector = document.getElementById('submapSelector');
-        
-        let current_submaps = [];
         
         const renderer = new THREE.WebGLRenderer({ canvas });
         
+        // Camera
         const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000);
         camera.up.set(0, -1, 0);
 
+        // Controls - 使用官方标准 OrbitControls
         const controls = new OrbitControls(camera, canvas);
-        controls.enableDamping = true;
+        controls.enableDamping = true; // 开启阻尼效果，让交互更平滑
         controls.target = new THREE.Vector3(0, 0, 1);
         controls.update();
         
@@ -189,6 +173,7 @@
 
         function connectWebSocket() {
             console.log("Attempting to connect to WebSocket...");
+
             ws = new WebSocket(`ws://${window.location.hostname}:6009`);
             ws.binaryType = 'blob';
             
@@ -197,7 +182,7 @@
 
             ws.onopen = () => {
                 console.log('WebSocket connected');
-                statusValue.innerText = 'Connected';
+                statusValue.innerText = 'Connected, waiting for training loop to begin...';
                 startBtn.disabled = false;
                 stopBtn.disabled = true;
                 finishBtn.disabled = false;
@@ -207,75 +192,49 @@
                 let data = event.data;
                 if (data instanceof Blob) {
                     const url = URL.createObjectURL(data);
-                    loader.load(url, (texture) => {
-                        texture.colorSpace = THREE.SRGBColorSpace;
-                        scene.background = texture;
-                    });
+                    loader.load(url, (texture) => {texture.colorSpace = THREE.SRGBColorSpace; scene.background = texture;});
                 } else {
-                    let received_data = JSON.parse(data);
-
-                    // 更新UI状态
-                    if (received_data.trainer_state === "running") {
+                    let data = JSON.parse(event.data);
+                    if (data.trainer_state === "running") {
                         statusValue.innerText = state === 'start' ? 'Running' : 'Paused';
-                        isActivelyLoading = false; // 重置加载状态
-                    } else if (received_data.trainer_state === "finish") {
+                    } else if (data.trainer_state === "finish") {
                         statusValue.innerText = "Finished";
                         startBtn.disabled = true;
                         stopBtn.disabled = true;
                         finishBtn.disabled = true;
                     }
                     
-                    // 更新场景边界和相机
-                    minBounds.set(received_data.min_pos[0], received_data.min_pos[1], received_data.min_pos[2]);
-                    maxBounds.set(received_data.max_pos[0], received_data.max_pos[1], received_data.max_pos[2]);
-                    cameraToWorld.fromArray(received_data.mean_pose).transpose();
+                    minBounds.set(data.min_pos[0], data.min_pos[1], data.min_pos[2])
+                    maxBounds.set(data.max_pos[0], data.max_pos[1], data.max_pos[2])
+                    cameraToWorld.fromArray(data.mean_pose).transpose(); 
+
                     const sceneSize = new THREE.Vector3().subVectors(maxBounds, minBounds).length();
                     if (sceneSize > 0) {
                         camera.far = sceneSize * 10;
                         camera.updateProjectionMatrix();
                     }
 
-                    // 更新子地图ID显示
-                    if (received_data.submap_id !== undefined) {
-                        document.getElementById('submapIdValue').innerText = received_data.submap_id;
+                    data = {
+                        res_x: canvas.clientWidth,
+                        res_y: canvas.clientHeight,
+                        state: state,
+                        pose: camera.matrixWorld.elements,
+                        snapToLast: snap.innerText === 'Free view' ? true: false,
+                        view_mode: viewMode
                     }
-
-                    // 更新子地图下拉列表
-                    if (received_data.available_submaps) {
-                        const new_submaps = received_data.available_submaps;
-                        if (JSON.stringify(new_submaps) !== JSON.stringify(current_submaps)) {
-                            current_submaps = new_submaps;
-                            submapSelector.innerHTML = '';
-                            current_submaps.forEach(id => {
-                                const option = document.createElement('option');
-                                option.value = id;
-                                option.innerText = `Submap ${id}`;
-                                submapSelector.appendChild(option);
-                            });
-                        }
-                        // 保持下拉菜单与当前子地图同步
-                        submapSelector.value = received_data.submap_id;
-                    }
-
-                    // 只有在非加载状态下才发送渲染请求
-                    if (!isActivelyLoading) {
-                        let send_data = {
-                            res_x: canvas.clientWidth,
-                            res_y: canvas.clientHeight,
-                            state: state,
-                            pose: camera.matrixWorld.elements,
-                            snapToLast: snap.innerText === 'Free view' ? true : false,
-                            view_mode: viewMode
-                        };
-                        ws.send(JSON.stringify(send_data));
-                    }
+                    ws.send(JSON.stringify(data));
                 }
             };
 
-            ws.onerror = (err) => { console.error('WebSocket error:', err); };
+            ws.onerror = (err) => {
+                console.error('WebSocket error:', err);
+            };
+
             ws.onclose = () => {
-                console.warn('WebSocket closed. Trying to reconnect...');
-                startBtn.disabled = true; stopBtn.disabled = true; finishBtn.disabled = true;
+                console.warn('WebSocket closed. Trying to reconnect in 5 seconds...');
+                startBtn.disabled = true;
+                stopBtn.disabled = true;
+                finishBtn.disabled = true;
                 statusValue.innerText = 'Disconnected';
                 setTimeout(connectWebSocket, reconnectInterval);
             };
@@ -283,17 +242,36 @@
 
         connectWebSocket();
 
-        // --- 所有按钮的事件监听器 ---
-        startBtn.addEventListener('click', () => { state = 'start'; startBtn.disabled = true; stopBtn.disabled = false; });
-        stopBtn.addEventListener('click', () => { state = 'stop'; startBtn.disabled = false; stopBtn.disabled = true; });
-        finishBtn.addEventListener('click', () => { state = 'finish'; startBtn.disabled = true; stopBtn.disabled = true; finishBtn.disabled = true; });
+        startBtn.addEventListener('click', () => {
+            state = 'start';
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+        });
+
+        stopBtn.addEventListener('click', () => {
+            state = 'stop';
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+        });
+
+        finishBtn.addEventListener('click', () => {
+            state = 'finish';
+            startBtn.disabled = true;
+            stopBtn.disabled = true;
+            finishBtn.disabled = true;
+        });
+
         snap.addEventListener('click', () => {
-            const _v = new THREE.Vector3();
+            const _v = new THREE.Vector3(); // Helper vector
             if (snap.innerText === 'Free view') {
                 snap.innerText = 'Snap to last';
                 controls.enabled = true;
+
                 _v.setFromMatrixPosition(cameraToWorld);
-                controls.target.set(0, 0, -1).transformDirection(cameraToWorld).multiplyScalar(1).add(_v);
+                controls.target.set( 0, 0, - 1 )
+                    .transformDirection( cameraToWorld )
+                    .multiplyScalar( 1 )
+                    .add( _v );
                 camera.position.copy(_v);
                 camera.lookAt(controls.target);
                 controls.update();
@@ -303,10 +281,21 @@
                 controls.update();
             }
         });
-        rgbButton.addEventListener('click', () => { viewMode = 'rgb'; console.log('Switched to RGB view'); });
-        depthButton.addEventListener('click', () => { viewMode = 'depth'; console.log('Switched to Depth view'); });
+
+        rgbButton.addEventListener('click', () => {
+            viewMode = 'rgb';
+            console.log('Switched to RGB view');
+        });
+
+        depthButton.addEventListener('click', () => {
+            viewMode = 'depth';
+            console.log('Switched to Depth view');
+        });
+
         topViewButton.addEventListener('click', () => {
-            if (snap.innerText === 'Free view') snap.click();
+            if (snap.innerText === 'Free view') {
+                snap.click();
+            }
             const sceneCenter = new THREE.Vector3().addVectors(minBounds, maxBounds).multiplyScalar(0.5);
             const sceneSize = new THREE.Vector3().subVectors(maxBounds, minBounds).length();
             controls.target.copy(sceneCenter);
@@ -316,36 +305,25 @@
             console.log('Switched to Top View');
         });
 
-        // --- 子地图选择器的事件监听器 ---
-        submapSelector.addEventListener('change', (event) => {
-            const selectedId = parseInt(event.target.value);
-            console.log(`Requesting to load submap: ${selectedId}`);
-            isActivelyLoading = true; // 进入加载状态
-            const message = {
-                action: "load_submap",
-                submap_id: selectedId,
-                state: 'stop' // 切换地图时，后端应处于暂停状态
-            };
-            ws.send(JSON.stringify(message));
-            statusValue.innerText = `Loading Submap ${selectedId}...`;
-        });
-
         function resizeRendererToDisplaySize() {
             const width = canvas.clientWidth;
             const height = canvas.clientHeight;
             const needResize = canvas.width !== width || canvas.height !== height;
             if (needResize) {
-                renderer.setSize(width, height, false);
-                camera.aspect = canvas.clientWidth / canvas.clientHeight;
-                camera.updateProjectionMatrix();
+                renderer.setSize(width, height, false );
             }
             return needResize;
         }
 
-        function render(time) {
-            resizeRendererToDisplaySize();
-            controls.update();
-            renderer.render(scene, camera);
+        function render( time ) {
+            if (resizeRendererToDisplaySize()) {
+                camera.aspect = canvas.clientWidth / canvas.clientHeight;
+                camera.updateProjectionMatrix();
+            }
+            
+            controls.update(); // 更新控制器，使阻尼生效
+
+            renderer.render(scene, camera)
             requestAnimationFrame(render);
         }
 
